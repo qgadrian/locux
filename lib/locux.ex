@@ -1,9 +1,12 @@
-defmodule Locust do
-  require Worker
-  require Reporter
+defmodule Locux do
+  alias Locux.Worker
+  alias Locux.Reporter
+
+  @default_num_of_workers Application.get_env(:locux, :num_of_workers)
+  @default_num_of_requests Application.get_env(:locux, :num_of_requests)
 
   def main(args) do
-    args |> parse_args |> process
+    args |> parse_args() |> process()
   end
 
   defp parse_args(args) do
@@ -16,18 +19,23 @@ defmodule Locust do
 
   defp process(args) do
     url = List.first(elem(args, 1))
+
     opts = elem(args, 0)
-    num_of_workers = opts[:concurrency] || 1
-    num_of_requests = opts[:number] || 10
+    num_of_workers = opts[:concurrency] || @default_num_of_workers
+    num_of_requests = opts[:number] || @default_num_of_requests
     headers = opts |>  Keyword.get_values(:header) |> parse_headers
+
+    :ok = :hackney_pool.start_pool(:workers_pool, [max_connections: num_of_requests * num_of_workers])
+
     if opts[:help] do
       print_help()
     end
 
-    opts = Keyword.put(opts, :total_requests, num_of_requests * num_of_workers)
-    |> Keyword.put(:headers, headers)
+    opts =
+      opts
+      |> Keyword.put(:total_requests, num_of_requests * num_of_workers)
+      |> Keyword.put(:headers, headers)
 
-    IO.puts "Spawning locust swarm..."
     results = run_workers(url, num_of_workers, num_of_requests, opts)
     Reporter.render(results, num_of_workers)
   end
@@ -35,32 +43,34 @@ defmodule Locust do
   defp parse_headers(headers_array) do
     Enum.map(headers_array, fn(h) ->
       [key, value] = String.split(h, ":")
-      {String.to_atom(key), value}
+      {key, value}
     end)
-    |> Keyword.new
   end
 
   defp run_workers(url, num_of_workers, num_of_requests, opts) do
     {:ok, agent} = Agent.start_link(fn -> [] end)
     workers = for _ <- 1..num_of_workers, do: spawn fn -> Worker.call(agent, url, num_of_requests, opts) end
     wait_for_workers(workers, agent, num_of_requests * num_of_workers)
-    Agent.get(agent, fn list -> list end)
+    Agent.get(agent, &(&1))
   end
 
   defp wait_for_workers(workers, agent, total) do
     print_progress_bar(agent, total)
     aliveness = Enum.map(workers, fn(x) -> Process.alive?(x) end)
-    if Enum.any?(aliveness, fn(x) -> x == true end) do
+    if Enum.any?(aliveness, &(&1 == true)) do
       :timer.sleep(20)
       wait_for_workers(workers, agent, total)
     end
   end
 
   defp print_progress_bar(agent, total) do
-    results = Agent.get(agent, fn(list) -> list end)
+    results = Agent.get(agent, &(&1))
     format = [
       bar_color: [IO.ANSI.white, IO.ANSI.green_background],
       blank_color: IO.ANSI.yellow_background,
+      bar: " ",
+      left: "Spawning locux swarm: \t",
+      right: "",
     ]
     ProgressBar.render(length(results), total, format)
   end
@@ -68,9 +78,9 @@ defmodule Locust do
   defp print_help() do
     IO.puts """
       Usage:
-        locust [host] [options]
+        locux [host] [options]
 
-        Example: locust http://localhost:8080 -c 20 -n 200
+        Example: locux http://localhost:8080 -c 20 -n 200
 
       Options:
         -h --help             Print help (this message)
